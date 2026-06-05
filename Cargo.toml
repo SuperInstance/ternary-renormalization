@@ -1,0 +1,7 @@
+[package]
+name = "ternary-renormalization"
+version = "0.1.0"
+edition = "2021"
+description = "Renormalization group flow in ternary systems — coarse-graining, fixed points, universality"
+license = "MIT"
+[dependencies]
