@@ -1,82 +1,154 @@
 # ternary-renormalization
 
-**Renormalization group methods applied to ternary {-1, 0, +1} fields — coarse-graining, fixed points, critical exponents, and universality classes in discrete three-state systems.**
+The renormalization group on ternary fields — coarse-graining reveals fixed points, critical exponents, and universality.
 
-## Background
+## Why This Exists
 
-The renormalization group (RG) is one of the most powerful ideas in theoretical physics. Developed by Kenneth Wilson in the 1970s (earning him the 1982 Nobel Prize), RG explains how physical systems behave at different length scales. The core insight is deceptively simple: when you "zoom out" by averaging or coarse-graining local details, some properties remain unchanged while others vanish. The properties that persist under coarse-graining define the system's **universality class** — a deep structural invariant that transcends microscopic details.
+The renormalization group (RG) is one of physics' deepest ideas: when you zoom out from a system, certain properties survive and others wash away. Zoom out enough and every system falls into a **universality class** — systems that look completely different at the microscopic level share the same large-scale behavior. Water-liquid transitions and magnet transitions obey the same mathematics. This is not a metaphor; it's a theorem.
 
-In condensed matter physics, RG explains why water and iron undergo phase transitions with the same critical exponents — they share a universality class despite being utterly different materials. The Ising model, Potts model, and percolation all have well-characterized RG flows in the thermodynamic limit.
+This crate implements RG flow on ternary fields `{-1, 0, +1}`. You start with a fine-grained ternary field, apply majority-rule or sum-rule coarse-graining (reduce resolution by 2×), and measure observables at each scale: magnetization, energy, and entropy. The sequence of measurements is the RG flow trajectory. Fixed points (where observables stop changing) identify phase behavior. Critical exponents (how observables vanish near criticality) classify universality.
 
-This crate applies RG to ternary {-1, 0, +1} fields. The question is: what happens when we coarse-grain a discrete three-state system? Each 2×2 block of ternary cells is replaced by a single ternary cell, and we track how observables (magnetization, energy, entropy) evolve as we repeatedly zoom out. In binary systems, the majority-rule RG of the Ising model produces exact results in two dimensions. In ternary, the presence of the zero state introduces a fundamentally different dynamic: ties become possible, and the zero state acts as an "absorbing" state that can dominate at large scales.
+`#![no_std]` compatible — pure algebra, no system dependencies.
 
-The mathematical framework draws on the **block spin renormalization** approach: partition the lattice into blocks, replace each block with an effective spin, and compute the renormalized coupling constants. For ternary systems, the coupling structure is richer than binary because there are three possible states and thus three distinct pair interactions (+1/+1, +1/0, +1/−1, etc.).
+## Architecture
 
-## How It Works
+```
+TernaryField (width × height, cells: Vec<i8>)
+    │
+    ├── Observables
+    │   ├── magnetization() → i8       (average cell value)
+    │   ├── energy() → i32             (disagreeing neighbor pairs)
+    │   └── entropy() → usize          (distinct 3×3 patches)
+    │
+    ├── Coarse-graining
+    │   ├── coarse_grain_majority() → TernaryField  (2×2 blocks → majority vote)
+    │   └── coarse_grain_sum() → TernaryField       (2×2 blocks → sum, clamped)
+    │
+    ▼
+RGFlow (tracks observables across scales)
+    ├── magnetization_history: Vec<i8>
+    ├── energy_history: Vec<i32>
+    ├── entropy_history: Vec<usize>
+    ├── scales: Vec<usize>            (resolution at each level)
+    │
+    ├── fixed_point() → Option<i8>    (magnetization stops changing)
+    ├── is_critical() → bool          (entropy stays high across scales)
+    │
+    ▼
+Universality Classification
+    ├── same_universality_class(flow_a, flow_b) → bool
+    └── critical_exponent(flow) → i8  (magnetization decay rate)
+```
 
-**`TernaryField`** — A 2D field of ternary values with observables:
-- **`magnetization`**: The average value of all cells, computed as `(Σ cells × 3 / N)` clamped to {-1, 0, +1}. A fully +1 field gives magnetization = +1; a balanced field gives 0.
-- **`energy`**: Nearest-neighbor Ising energy `E = -Σ s_i · s_j` over horizontal and vertical bonds. Aligned neighbors (e.g., +1/+1 or -1/-1) contribute -1; anti-aligned (+1/-1) contribute +1; mixed with zero contribute 0.
-- **`entropy`**: Counts the number of distinct 3×3 patches, serving as a proxy for configurational entropy.
+**Key types:**
 
-**Coarse-graining methods**:
-- **`coarse_grain_majority`**: Each 2×2 block is replaced by its majority value. Ties default to 0. This is the standard block-spin RG rule.
-- **`coarse_grain_sum`**: Each 2×2 block's values are summed and clamped to {-1, 0, +1}. This preserves more information about the block's net "charge."
+- **`TernaryField`** — a 2D grid of `i8` values in `{-1, 0, +1}`. Supports two coarse-graining strategies and three observable measurements.
+- **`RGFlow`** — the result of running RG flow on a field. Tracks how magnetization, energy, and entropy evolve across coarse-graining levels.
+- **`same_universality_class()`** — compares two RG flows. Systems in the same universality class converge to the same fixed point.
+- **`critical_exponent()`** — measures how magnetization vanishes under coarse-graining. Related to the β exponent in critical phenomena.
 
-**`RGFlow`** — Tracks observables across multiple coarse-graining steps:
-- Records magnetization, energy, entropy, and resolution at each level.
-- **`fixed_point`**: Detects when magnetization stabilizes (last two values are equal).
-- **`is_critical`**: A system is at a critical point when entropy remains high across scales — the signature of scale-invariant structure (fractal patterns).
+## Usage
 
-**`same_universality_class`** — Compares two RG flows: if they converge to the same fixed point, they belong to the same universality class.
+```rust
+use ternary_renormalization::{TernaryField, RGFlow, same_universality_class, critical_exponent};
 
-**`critical_exponent`**: Computes a ternary approximation of the magnetization exponent β = log(|m₂|)/log(|m₁|), quantifying how quickly order disappears under coarse-graining.
+// Create a uniform field (ordered phase)
+let mut ordered = TernaryField::new(16, 16);
+for y in 0..16 {
+    for x in 0..16 {
+        ordered.set(x, y, 1);
+    }
+}
 
-### Design Decisions
+// Run RG flow: coarse-grain repeatedly
+let flow = RGFlow::run(&ordered, 4); // up to 4 levels of coarse-graining
+assert_eq!(flow.fixed_point(), Some(1)); // magnetization stays at +1
+// Ordered phase: fixed point at full magnetization
 
-- **Two coarse-graining rules**: Majority-rule preserves the dominant phase but loses information about ties; sum-rule preserves net magnetization but can amplify noise. Having both lets researchers study how the RG flow depends on the coarse-graining scheme.
-- **No random number generation**: The coarse-graining is deterministic, making results reproducible. In statistical mechanics, one typically averages over disorder realizations; here, we study single configurations.
-- **`#![no_std]` compatible**: Suitable for deployment on ternary hardware.
+// Create a mixed field (near critical)
+let mut mixed = TernaryField::new(16, 16);
+for y in 0..16 {
+    for x in 0..16 {
+        mixed.set(x, y, if (x + y) % 2 == 0 { 1 } else { -1 });
+    }
+}
+let flow_mixed = RGFlow::run(&mixed, 4);
 
-## Experimental Results
+// Check if the system is at a critical point
+// (entropy stays high across scales = scale-invariant fluctuations)
+println!("Critical? {}", flow_mixed.is_critical());
 
-All 13 tests pass. Key observations:
+// Compare two systems: same universality class?
+let flow1 = RGFlow::run(&ordered, 4);
+let flow2 = RGFlow::run(&ordered, 4);
+assert!(same_universality_class(&flow1, &flow2)); // identical systems
 
-- **Uniform field +1**: A 4×4 field of all +1 has magnetization = +1 and negative energy (all bonds aligned). After coarse-graining by majority, the 2×2 result is still all +1. The RG flow reaches a fixed point at magnetization = +1 in 2+ levels — the ordered phase is stable under RG.
-- **Majority coarse-graining of a uniform block**: A 4×4 field where only the top-left 2×2 block is +1, rest is 0. The coarse-grained 2×2 field has `cg.get(0,0) = +1` and the other three cells = 0. Majority rule correctly identifies the ordered region.
-- **Sum coarse-graining**: The same +1 block gives sum = 4, clamped to +1. For a block with two +1 and two -1, the sum is 0 — the zero state absorbs balanced configurations.
-- **Entropy of uniform field**: An all-+1 6×6 field has entropy = 1 (only one distinct 3×3 patch). A checkerboard with period-3 has entropy ≥ 1 with multiple distinct patches.
-- **Universality class matching**: Two identical 8×8 fields of all +1 produce RG flows with the same fixed point (+1), confirming `same_universality_class` returns true.
-- **Critical exponent**: For a uniform +1 field, the critical exponent β is in {-1, 0, +1} — the ternary quantization limits the resolution of this measurement.
+// Critical exponent: how fast does magnetization decay?
+let beta = critical_exponent(&flow1);
+println!("Critical exponent: {}", beta);
 
-## Impact
+// Coarse-graining strategies
+let cg_majority = ordered.coarse_grain_majority(); // 2×2 blocks → majority vote
+let cg_sum = ordered.coarse_grain_sum();           // 2×2 blocks → sum, clamped
 
-Renormalization in ternary matters because:
+// Observables
+let m = ordered.magnetization();  // net alignment
+let e = ordered.energy();         // neighbor agreement (negative = aligned)
+let s = ordered.entropy();        // number of distinct local patterns
 
-1. **Network pruning decisions**: When coarse-graining a ternary neural network's weight matrix, RG tells you which features survive at larger scales. Features that vanish under RG are noise; features that persist are structural.
-2. **Multiscale analysis of ternary data**: Satellite imagery quantized to ternary, sensor arrays with three-state outputs — RG provides a principled framework for analyzing structure across scales.
-3. **Theoretical foundation**: This is the first (to our knowledge) implementation of block-spin RG for Z₃-valued fields, providing a computational laboratory for studying ternary critical phenomena.
+// Entropy of a uniform field
+assert_eq!(ordered.entropy(), 1); // only one distinct 3×3 pattern
+```
 
-## Use Cases
+## API Reference
 
-1. **Ternary neural network pruning analysis**: Apply RG to the weight matrices of a trained ternary network. If coarse-graining preserves the network's output, the pruned (coarse-grained) weights define a smaller, equivalent network — a principled pruning criterion.
+### `TernaryField`
 
-2. **Multiscale image analysis in ternary**: Quantize a grayscale image to ternary {-1, 0, +1} (below threshold, at threshold, above threshold). Apply RG to detect whether features persist across scales — a measure of self-similarity useful for texture classification.
+| Method | Description |
+|--------|-------------|
+| `TernaryField::new(width, height)` | Create field initialized to 0 |
+| `.get(x, y)` / `.set(x, y, v)` | Cell access (values clamped to `{-1, 0, +1}`) |
+| `.coarse_grain_majority()` | Reduce resolution 2×. Each 2×2 block → majority value. Ties → 0. |
+| `.coarse_grain_sum()` | Reduce resolution 2×. Each 2×2 block → sum, clamped to ternary. |
+| `.magnetization()` | Average cell value, quantized to `i8` |
+| `.energy()` | Count of disagreeing neighbor pairs (Ising energy) |
+| `.entropy()` | Number of distinct 3×3 patches |
 
-3. **Criticality detection in agent populations**: Model a population of agents as a ternary field (agent state = -1/0/+1). Track whether the population is at a critical point (entropy stays high under RG), which predicts sensitivity to perturbations.
+### `RGFlow`
 
-4. **Material phase diagram exploration**: Use RG to map the phase diagram of ternary lattice models. Vary the initial conditions and track which fixed points the system flows to — a computational substitute for expensive Monte Carlo simulations.
+| Method | Description |
+|--------|-------------|
+| `RGFlow::run(initial, max_levels)` | Run RG flow on a field. Coarse-grain up to `max_levels` times, stopping when resolution < 4. |
+| `.fixed_point()` | Magnetization at last two levels are equal → fixed point found |
+| `.is_critical()` | Minimum entropy > half of maximum entropy (scale-invariant) |
 
-5. **Data compression**: Coarse-graining is a form of lossy compression. RG tells you how much information is lost at each scale, enabling rate-distortion analysis for ternary data streams.
+Fields: `magnetization_history`, `energy_history`, `entropy_history`, `scales`
 
-## Open Questions
+### Free Functions
 
-1. **Ternary critical exponents**: In the binary Ising model, the 2D critical exponent β ≈ 1/8 is known exactly. What are the critical exponents for ternary (Z₃) systems? Our coarse-graining approach gives only {-1, 0, +1}-valued approximations, which are too coarse for accurate exponent estimation.
+| Function | Description |
+|----------|-------------|
+| `same_universality_class(flow_a, flow_b)` | True if both have the same fixed point |
+| `critical_exponent(flow)` | Ratio of magnetization change between last two scales, clamped to ternary |
 
-2. **Optimal coarse-graining rule**: Majority-rule and sum-rule are natural choices, but are they optimal? There may be coarse-graining schemes that preserve more information about the original field, especially near criticality.
+## The Deeper Idea
 
-3. **Finite-size effects**: Our tests use 4×4 to 8×8 fields, which are tiny by physics standards. How do the RG flows change as the system size increases toward the thermodynamic limit?
+The renormalization group answers a deep question: **which microscopic details matter?** The answer is: most don't. When you coarse-grain a system — averaging over small-scale fluctuations — only a few parameters survive. These are the **relevant operators** in RG language. Everything else is washed away by the coarse-graining.
 
-## Connection to Oxide Stack
+In the ternary framework, this plays out as follows. Start with an arbitrary ternary field. Apply majority-rule coarse-graining. At each level, measure magnetization, energy, and entropy. The trajectory of these observables is the RG flow. Three things can happen:
 
-In the five-layer architecture, `ternary-renormalization` operates at the **flux-core** level as a multiscale analysis tool. Its RG flow analysis can inform the **pincher** layer's decision about when to stop iterating (convergence detection via fixed points). At the **cuda-oxide** level, coarse-graining is an embarrassingly parallel operation (each 2×2 block is independent), making it an ideal candidate for GPU acceleration. The entropy metric feeds directly into **cudaclaw**'s reporting infrastructure, providing users with a quantitative measure of system complexity.
+1. **Flow to ordered fixed point** (magnetization → ±1): the system is in a uniform phase. All fluctuations are suppressed. The microscopic details don't matter — the system forgets its initial conditions.
+
+2. **Flow to disordered fixed point** (magnetization → 0): the system is in a random phase. All correlations decay. Again, initial conditions are forgotten.
+
+3. **Critical flow** (entropy stays high across scales): the system is at a phase transition. Fluctuations exist at *every* scale — the system is scale-invariant. This is where the interesting physics lives.
+
+The ternary simplification — three states instead of a continuum — makes the RG flow computationally trivial but conceptually complete. You lose the ability to study continuous phase transitions, but you gain clarity: the fixed points are exactly `{−1, 0, +1}`, the critical exponent is quantized, and universality classes are determined by which fixed point the flow converges to.
+
+Universality is the punchline. Two ternary fields with completely different initial conditions — one generated by a reaction-diffusion process, another by a percolation process — can flow to the same fixed point. This means they share the same large-scale behavior despite having nothing in common at the microscopic level. That's the power of the renormalization group: it separates the universal from the particular.
+
+## Related Crates
+
+- **`ternary-morphogenesis`** — reaction-diffusion on ternary grids, whose patterns are analyzed by this crate
+- **`ternary-percolate`** — percolation on ternary grids, another source of fields for RG analysis
+- **`conservation-spectral-topology-rs`** — spectral analysis of graph structure, complementing RG's real-space analysis
